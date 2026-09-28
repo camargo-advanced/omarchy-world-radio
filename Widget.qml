@@ -37,9 +37,11 @@ Panel {
   property bool loadingCountries: false
   property bool loadingStations: false
   property string searchText: ""
-  property var searchStations: []      // global name-search results while searching
+  // Global name-search results while a search is live.
+  property var searchStations: []
   property bool loadingSearch: false
-  property string searchQuery: ""      // last query sent to the API
+  // Last query actually sent to the API, so stale responses can be dropped.
+  property string searchQuery: ""
   property bool hoverPlay: setting("hoverPlay", true) === true || String(setting("hoverPlay", true)) === "true"
   property real volume: {
     var v = Number(setting("volume", 0.8));
@@ -58,7 +60,8 @@ Panel {
   property string committedIso: ""
   property string committedName: ""
   property var committedStation: null
-  property bool revealPending: false   // scroll the committed row into view once its list lands
+  // Scroll the committed row into view once its list lands.
+  property bool revealPending: false
 
   // Filter, preview and selection are three different things. While a search
   // filter is active the lists rebuild on every keystroke, so rows slide
@@ -108,7 +111,7 @@ Panel {
       out.push({ name: cc.name, iso: cc.iso, count: counts[cc.iso] });
     }
     for (var m = 0; m < out.length; m++) {
-      if (counts[out[m].iso] && counts[out[m].iso] > 0) out[m].count = counts[out[m].iso];
+      if (counts[out[m].iso] > 0) out[m].count = counts[out[m].iso];
     }
     out.sort(function (a, b) { return b.count - a.count; });
     return out;
@@ -119,8 +122,8 @@ Panel {
   // The picked station, when it is not part of the list on screen. Search
   // ranks worldwide by name relevance while a country list ranks by clicks
   // and cuts at 30, so a pick is often absent from its own country's top
-  // list — it gets a pinned row above the list so the choice is always
-  // visible, and so clearing a filter always has something to land on.
+  // list — it gets a pinned row above the list, so the choice is always
+  // visible and clearing a filter always has something to land on.
   readonly property var pinnedStation: {
     if (!committedStation) return null;
     var list = displayStations;
@@ -290,10 +293,10 @@ Panel {
     player.play();
   }
 
-  // Clicking a station row: play it, and remember the pick — the country it
-  // came from is what a later filter clear returns to. When the row came from
-  // worldwide search results, also mark its country (highlight in the country
-  // list and on the globe) while keeping the search and its results on screen.
+  // Clicking a station row plays it and remembers the pick: the country it
+  // came from is what a later filter clear returns to. A pick from worldwide
+  // search results also marks its country — highlighted in the country list
+  // and on the globe — while the search and its results stay on screen.
   function playStationFromList(st) {
     playStation(st);
     if (!st) return;
@@ -301,7 +304,8 @@ Panel {
     var name = String(st.country || "");
     if (iso === "") {
       for (var i = 0; i < countries.length; i++) {
-        if (String(countries[i].name || "").toLowerCase() === name.toLowerCase()) {
+        if (String(countries[i].name || "").toLowerCase()
+            === name.toLowerCase()) {
           iso = countries[i].iso;
           name = countries[i].name;
           break;
@@ -445,8 +449,8 @@ Panel {
     pendingStation = null;
   }
 
-  // Clearing the filter is a view operation, never a selection one: put the
-  // user back on the country they chose their station from.
+  // Clearing the filter is a view operation, not a selection one: it puts
+  // the user back on the country they chose their station from.
   function restoreCommittedContext() {
     if (committedIso === "") return;
     revealPending = true;
@@ -482,7 +486,8 @@ Panel {
     var rowH = Style.space(40);
     var view = stationFlick.height - Style.space(8);
     var top = idx * rowH;
-    if (top < stationFlick.contentY || top + rowH > stationFlick.contentY + view) {
+    if (top < stationFlick.contentY
+        || top + rowH > stationFlick.contentY + view) {
       var maxY = Math.max(0, stationFlick.contentHeight - view);
       stationFlick.contentY = Math.max(0, Math.min(top - rowH, maxY));
     }
@@ -539,7 +544,8 @@ Panel {
 
   // Global station search: typing a station name (or part of one) queries
   // the whole radio-browser directory, so any station is reachable without
-  // knowing its country first. Debounced; Enter plays the top result.
+  // knowing its country first. Typing is debounced and Enter plays the top
+  // result.
   function commitSearch(playTop) {
     var q = searchText.trim();
     if (q === "") {
@@ -547,8 +553,9 @@ Panel {
       searchQuery = "";
       searchStations = [];
       loadingSearch = false;
-      // Empty filter = the full dial again. Land on the user's pick instead
-      // of on whatever row the pointer drifted across while deleting.
+      // An empty filter restores the full station list, but lands on the
+      // user's committed pick — not on whatever row the pointer drifted
+      // across while deleting.
       restoreCommittedContext();
       return;
     }
@@ -574,7 +581,8 @@ Panel {
     var base = apiBase();
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== XMLHttpRequest.DONE) return;
-      if (q !== String(root.searchText || "").trim()) return; // stale response
+      // Ignore a response that a newer keystroke already superseded.
+      if (q !== String(root.searchText || "").trim()) return;
       if (xhr.status === 200) {
         try {
           var arr = JSON.parse(xhr.responseText);
@@ -828,8 +836,10 @@ Panel {
               onAccepted: {
                 if (root.searching) root.commitSearch(true);
                 else if (filteredCountries.length > 0) {
-                  root.commitCountry(filteredCountries[0].iso, filteredCountries[0].name);
-                  root.selectCountry(filteredCountries[0].iso, filteredCountries[0].name, true);
+                  root.commitCountry(filteredCountries[0].iso,
+                                     filteredCountries[0].name);
+                  root.selectCountry(filteredCountries[0].iso,
+                                     filteredCountries[0].name, true);
                 }
               }
             }
@@ -837,7 +847,9 @@ Panel {
               id: countLabel
               anchors.verticalCenter: parent.verticalCenter
               text: root.searching
-                ? (root.loadingSearch ? "searching…" : (searchStations.length + " stations"))
+                ? (root.loadingSearch
+                   ? "searching…"
+                   : (root.searchStations.length + " stations"))
                 : (filteredCountries.length + " found")
               color: Util.alpha(root.fg, 0.6)
               font.family: root.fontFamily
@@ -867,7 +879,9 @@ Panel {
                 points: root.globePoints
                 selectedIso: root.selectedIso
                 playingIso: root.playingIso
-                onPointHovered: function (p) { if (root.hoverCommits) root.previewCountry(p.iso, p.name); }
+                onPointHovered: function (p) {
+                  if (root.hoverCommits) root.previewCountry(p.iso, p.name);
+                }
                 onPointSelected: function (p) {
                   root.commitCountry(p.iso, p.name);
                   root.searchText = "";
@@ -989,9 +1003,11 @@ Panel {
                           cursorShape: Qt.PointingHandCursor
                           onContainsMouseChanged: {
                             // Hover mode off — or a search is live and these
-                            // rows are re-sorting under the cursor: hover only
-                            // highlights, selection and playback are click-only.
-                            if (containsMouse && root.hoverCommits) root.previewCountry(modelData.iso, modelData.name);
+                            // rows are re-sorting under the cursor: hovering
+                            // only highlights; selecting and playing stay
+                            // click-only.
+                            if (containsMouse && root.hoverCommits)
+                              root.previewCountry(modelData.iso, modelData.name);
                           }
                           onClicked: {
                             root.commitCountry(modelData.iso, modelData.name);
@@ -1040,10 +1056,10 @@ Panel {
                   font.italic: true
                 }
                 Text {
-                  visible: root.searching && !root.loadingSearch && searchStations.length === 0
-                    && root.searchText.trim().length >= 2
+                  visible: root.searching && !root.loadingSearch
+                    && root.searchStations.length === 0 && root.searchText.trim().length >= 2
                   anchors.centerIn: parent
-                  text: "No stations match “" + root.searchText.trim() + "”"
+                  text: "No stations match \"" + root.searchText.trim() + "\""
                   color: Util.alpha(root.fg, 0.5)
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
@@ -1070,7 +1086,8 @@ Panel {
                   radius: Style.cornerRadius
                   color: Style.selectedFillFor(root.fg, Color.accent)
 
-                  // Marks the row as the pick rather than a chart entry.
+                  // Accent stripe marks the row as the user's pick, not a
+                  // ranked entry.
                   Rectangle {
                     width: Style.space(3)
                     height: parent.height - Style.space(12)
@@ -1129,7 +1146,9 @@ Panel {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: if (root.pinnedStation) root.playStationFromList(root.pinnedStation)
+                    onClicked: {
+                      if (root.pinnedStation) root.playStationFromList(root.pinnedStation);
+                    }
                   }
                 }
 
@@ -1216,7 +1235,8 @@ Panel {
                           onContainsMouseChanged: {
                             // Search results re-sort under a still cursor, so
                             // during a live search rows only highlight.
-                            if (containsMouse && root.hoverCommits) root.previewStation(modelData);
+                            if (containsMouse && root.hoverCommits)
+                              root.previewStation(modelData);
                           }
                           onClicked: root.playStationFromList(modelData)
                         }
