@@ -23,7 +23,10 @@ Press Escape to close it.
 - Drag the globe to spin it by hand.
 - Right-click the bar icon to stop playback, middle-click to open
   radio.garden in a browser.
-- `/` focuses country search, `Space` toggles play/stop.
+- `/` focuses search — it matches radio station names worldwide and
+  lists the countries of the matching stations; clicking a result plays
+  it and marks its country, keeping the results; `Enter` plays the top
+  result, `Space` toggles play/stop.
 
 ## Configure
 
