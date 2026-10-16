@@ -42,6 +42,13 @@ Panel {
   property bool loadingSearch: false
   // Last query actually sent to the API, so stale responses can be dropped.
   property string searchQuery: ""
+  // Complete local catalog: every working station, kept in memory for
+  // instant, unlimited search. Served from a disk snapshot when possible;
+  // otherwise fetched (paginated) in the background while the panel works
+  // on the remote fallbacks.
+  property var catalog: []
+  property bool loadingCatalog: false
+  property string catalogSource: ""   // "cache" | "api" | "" (not loaded)
   property bool hoverPlay: setting("hoverPlay", true) === true || String(setting("hoverPlay", true)) === "true"
   property real volume: {
     var v = Number(setting("volume", 0.8));
@@ -364,6 +371,30 @@ Panel {
     } catch (e) {}
   }
 
+  // ---- catalog cache: disk snapshot of the full station list ----
+  // Read path: FileView delivers the JSON on load (or onLoadFailed).
+  FileView {
+    id: catalogCacheFile
+    path: Quickshell.env("HOME") + "/.cache/quickshell/world-radio/catalog.json"
+    watchChanges: false
+    printErrors: false
+    onLoaded: root.loadCatalogCache(text())
+    onLoadFailed: {
+      if (!root.loadingCatalog && root.catalog.length === 0) root.fetchCatalog();
+    }
+  }
+
+  // Write path: a throwaway python process fetches the whole directory
+  // (see Model.CATALOG_FETCH_SCRIPT) and writes the snapshot itself — the
+  // QML engine never touches the 7 MB JSON pages, whose parsing would
+  // freeze the shell. On success the plugin just re-reads the file.
+  Component {
+    id: catalogFetcher
+    Process {
+      command: ["python3", "-c", Model.CATALOG_FETCH_SCRIPT, "wr"]
+    }
+  }
+
   // ------------------------------- data -------------------------------
   function apiBase() { return Model.MIRRORS[mirrorIndex % Model.MIRRORS.length]; }
 
@@ -393,8 +424,14 @@ Panel {
             out.push({ name: String(c.name), iso: String(c.iso_3166_1 || "").toUpperCase(), count: Number(c.stationcount) || 0 });
           }
           out.sort(function (a, b) { return b.count - a.count; });
-          root.countries = out;
-          root.statusText = out.length + " countries · hover the globe to tune in";
+          // Once the deduped catalog is live, its own country roll (real
+          // counts, spam-free) is authoritative — the API snapshot would
+          // resurrect extinguished countries, so it only seeds the globe
+          // while the catalog is still loading.
+          if (root.catalog.length === 0) {
+            root.countries = out;
+            root.statusText = out.length + " countries · hover the globe to tune in";
+          }
           if (root.selectedIso === "" && out.length > 0) selectCountry(out[0].iso, out[0].name, false);
         } catch (e) {
           root.errorText = "Could not parse country list";
@@ -420,12 +457,134 @@ Panel {
     }
   }
 
+  // ------------------------------- catalog -------------------------------
+  function ensureCatalog() {
+    if (catalog.length > 0 || loadingCatalog) return;
+    // First run pays a full download; the snapshot written afterwards makes
+    // later shell starts instant.
+    catalogCacheFile.reload();
+  }
+
+  function loadCatalogCache(text) {
+    try {
+      var obj = JSON.parse(text);
+      var arr = obj && obj.s ? obj.s : null;
+      if (!arr || arr.length < 1000) throw new Error("bad cache");
+      root.catalog = Model.dedupeStations(arr);
+      root.catalogSource = "cache";
+      root.statusText = root.catalog.length + " stations indexed (local)";
+      var age = Date.now() - (Number(obj.ts) || 0);
+      // The cache always feeds the country roll — rebuild the local lists
+      // from it right away, then quietly refresh a stale snapshot in the
+      // background. (Skipping the rebuild while waiting on a slow refresh
+      // left the countries list empty until the fetch finished — or forever,
+      // when it failed.)
+      rebuildLocalLists();
+      if (!(age > 0) || age > 3 * 24 * 3600 * 1000) fetchCatalog();
+    } catch (e) {
+      if (!loadingCatalog) fetchCatalog();
+    }
+  }
+
+  function fetchCatalog() {
+    if (loadingCatalog) return;
+    loadingCatalog = true;
+    catalogSource = "api";
+    statusText = "Indexing stations… (background)";
+    try {
+      var p = catalogFetcher.createObject(root);
+      p.finished.connect(function (code, status) {
+        root.loadingCatalog = false;
+        if (code === 0) {
+          // The snapshot is on disk now — read it back into the catalog.
+          catalogCacheFile.reload();
+        } else {
+          // Remote fallbacks keep working; the next panel open retries.
+          root.catalogSource = "";
+        }
+      });
+      p.running = true;
+    } catch (e) {
+      root.loadingCatalog = false;
+      root.catalogSource = "";
+    }
+  }
+
+  // Rebuild the derived local lists after the catalog lands or is replaced.
+  function rebuildLocalLists() {
+    // Countries with at least one station in the deduped catalog, with real
+    // counts. The API list still counts extinguished spam, so countries left
+    // with zero stations would otherwise linger in the list and on the globe.
+    root.countries = countriesFromCatalog();
+    root.stationCache = ({});
+    if (selectedIso !== "") {
+      var out = countryStationsLocal(selectedIso);
+      var cache = root.stationCache;
+      cache[selectedIso] = out;
+      root.stationCache = cache;
+      root.stations = out;
+    }
+    if (searching) commitSearch(false);
+  }
+
+  function countriesFromCatalog() {
+    var map = {};
+    var cat = catalog;
+    for (var i = 0; i < cat.length; i++) {
+      var s = cat[i];
+      var iso = String(s.countrycode || "").toUpperCase();
+      if (iso === "") continue;
+      var e = map[iso];
+      if (!e) {
+        map[iso] = { name: s.country || iso, iso: iso, count: 0 };
+        e = map[iso];
+      }
+      e.count++;
+    }
+    var out = [];
+    for (var k in map) out.push(map[k]);
+    out.sort(function (a, b) { return b.count - a.count; });
+    return out;
+  }
+
+  // Every station of a country, click-ranked — the local replacement for
+  // the API's per-country top-30.
+  function countryStationsLocal(iso) {
+    var out = [];
+    var cat = catalog;
+    for (var i = 0; i < cat.length; i++)
+      if (cat[i].countrycode === iso) out.push(cat[i]);
+    out.sort(function (a, b) { return b.clicks - a.clicks; });
+    return out.slice(0, Model.COUNTRY_LIST_CAP);
+  }
+
+  // Local worldwide search over the whole catalog: instant and unlimited,
+  // unlike the API's top-100.
+  function localSearch(q) {
+    var lq = q.toLowerCase();
+    var out = [];
+    var cat = catalog;
+    for (var i = 0; i < cat.length; i++)
+      if (cat[i].name.toLowerCase().indexOf(lq) >= 0) out.push(cat[i]);
+    out.sort(function (a, b) { return b.clicks - a.clicks; });
+    return out.slice(0, Model.SEARCH_LIST_CAP);
+  }
+
   function selectCountry(iso, name, autoplay) {
     root.selectedIso = iso;
     root.selectedName = name;
     if (stationCache[iso]) {
       root.stations = stationCache[iso];
       if (autoplay && stationCache[iso].length > 0) playStation(stationCache[iso][0]);
+      return;
+    }
+    if (catalog.length > 0) {
+      var out = countryStationsLocal(iso);
+      var cache = root.stationCache;
+      cache[iso] = out;
+      root.stationCache = cache;
+      root.stations = out;
+      if (autoplay && out.length > 0) playStation(out[0]);
       return;
     }
     fetchStations(iso, name, autoplay, false);
@@ -462,6 +621,13 @@ Panel {
     selectedName = committedName;
     if (stationCache[committedIso]) {
       stations = stationCache[committedIso];
+      Qt.callLater(root.revealCommittedStation);
+    } else if (catalog.length > 0) {
+      var out = countryStationsLocal(committedIso);
+      var cache = root.stationCache;
+      cache[committedIso] = out;
+      root.stationCache = cache;
+      stations = out;
       Qt.callLater(root.revealCommittedStation);
     } else {
       // No autoplay: clearing a filter must not restart audio.
@@ -542,10 +708,10 @@ Panel {
     }
   }
 
-  // Global station search: typing a station name (or part of one) queries
-  // the whole radio-browser directory, so any station is reachable without
-  // knowing its country first. Typing is debounced and Enter plays the top
-  // result.
+  // Global station search: with the local catalog ready this is an instant
+  // filter over ~53k stations; while the catalog is still loading it falls
+  // back to the remote API query. Typing is debounced and Enter plays the
+  // top result.
   function commitSearch(playTop) {
     var q = searchText.trim();
     if (q === "") {
@@ -571,7 +737,14 @@ Panel {
       return;
     }
     searchTimer.stop();
-    fetchStationSearch(q, playTop);
+    searchQuery = q;
+    if (catalog.length > 0) {
+      searchStations = localSearch(q);
+      loadingSearch = false;
+      if (playTop && searchStations.length > 0) playStationFromList(searchStations[0]);
+    } else {
+      fetchStationSearch(q, playTop);
+    }
   }
 
   function fetchStationSearch(q, playTop) {
@@ -652,6 +825,13 @@ Panel {
       if (stationCache[iso]) {
         stations = stationCache[iso];
         if (hoverPlay && stationCache[iso].length > 0) playStation(stationCache[iso][0]);
+      } else if (catalog.length > 0) {
+        var out = countryStationsLocal(iso);
+        var cache = root.stationCache;
+        cache[iso] = out;
+        root.stationCache = cache;
+        stations = out;
+        if (hoverPlay && out.length > 0) playStation(out[0]);
       } else {
         pendingIso = iso;
         pendingStation = null;
@@ -672,8 +852,8 @@ Panel {
     hoverTimer.restart();
   }
 
-  Component.onCompleted: ensureData()
-  onOpenedChanged: if (opened) ensureData()
+  Component.onCompleted: { ensureData(); ensureCatalog(); }
+  onOpenedChanged: if (opened) { ensureData(); ensureCatalog(); }
 
   // ------------------------------- bar button -------------------------------
   visible: true
@@ -697,6 +877,9 @@ Panel {
         nowPlaying: root.currentStation ? root.currentStation.name : "",
         countries: root.countries.length,
         stations: root.stations.length,
+        catalog: root.catalog.length,
+        catalogSource: root.catalogSource,
+        catalogLoading: root.loadingCatalog,
         pending: root.pendingIso !== "" || root.pendingStation !== null
       });
     }
@@ -824,7 +1007,8 @@ Panel {
             TextField {
               id: searchField
               width: parent.width - countLabel.width - parent.spacing
-              placeholderText: "Search countries + stations…  ( / )"
+              placeholderText: "Search " + (countries.length > 0 ? countries.length : "…")
+                + " countries, " + (catalog.length > 0 ? catalog.length : "…") + " stations…  ( / )"
               text: root.searchText
               font.family: root.fontFamily
               onTextChanged: {
@@ -953,7 +1137,9 @@ Panel {
                     id: countryCol
                     width: parent.width
                     Repeater {
-                      model: root.filteredCountries.slice(0, 200)
+                      // All 242 countries render fine in a Repeater; only the
+                      // station list needs capping (see COUNTRY_LIST_CAP).
+                      model: root.filteredCountries
                       Rectangle {
                         required property var modelData
                         required property int index

@@ -23,10 +23,14 @@ Press Escape to close it.
 - Drag the globe to spin it by hand.
 - Right-click the bar icon to stop playback, middle-click to open
   radio.garden in a browser.
-- `/` focuses search — matches station names worldwide and lists the
-  countries that have matches; clicking a result plays it and selects
-  its country, keeping the results; `Enter` plays the top result,
-  `Space` toggles play/stop.
+- `/` focuses search — it matches every station name worldwide from a
+  local catalog (~50k stations indexed in memory, refreshed every few
+  days and cached under `~/.cache/quickshell/world-radio/`), so results
+  are instant and unlimited; it also lists the countries that have
+  matches. Clicking a result plays it and selects its country, keeping
+  the results; `Enter` plays the top result, `Space` toggles play/stop.
+- Country lists come from the same local catalog (click-ranked), not
+  just the API's top 30.
 
 ## Configure
 
@@ -45,6 +49,15 @@ omarchy plugin remove io.github.kaibur02.omarchy-world-radio
 
 - Station directory and streams via
   [radio-browser.info](https://www.radio-browser.info) (no API key needed).
+- The full working-station catalog (~50k) is indexed in memory for
+  instant search; the first run downloads it in the background (~80 MB,
+  a minute or two), then a disk snapshot under
+  `~/.cache/quickshell/world-radio/` makes every later start instant.
+  The snapshot refreshes itself when older than three days.
+- Spam is extinguished: a radio's identity is its stream — any URL
+  appearing more than once in the directory (global streams registered
+  under dozens of countries, duplicate rows) has every copy removed
+  from the local catalog, on every load and refresh.
 - Fully theme-reactive: every color comes from Omarchy's `Color`/`Style`
   singletons, so theme switches restyle the plugin live.
 - No install hooks, no sudo, no background services. Runs entirely

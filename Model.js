@@ -175,6 +175,87 @@ function stationsSearchUrl(base, query, limit) {
     + "&hidebroken=true";
 }
 
+// ---- Full catalog ----
+
+// Rows a country list / a local search keep for the UI (plenty to scroll
+// through; keeps the Repeaters light).
+var COUNTRY_LIST_CAP = 400;
+var SEARCH_LIST_CAP = 500;
+
+// Extinguish spam: a radio's identity is its stream — any URL (ignoring
+// the trailing stream-extension variant) that appears more than once in
+// the catalog has the same radio registered in several places, so every
+// copy is removed. Global streams registered under dozens of countries
+// and plain duplicate rows never show up in any list. Every catalog load
+// and refresh reapplies the rule.
+function dedupeStations(arr) {
+  var seen = {};
+  var i, k;
+  for (i = 0; i < arr.length; i++) {
+    k = String(arr[i].url || "").replace(/\.(mp3|m3u8?|aac|ogg|opus|pls|asx|wma|mp4)(\?.*)?$/i, "").replace(/\/$/, "");
+    seen[k] = (seen[k] || 0) + 1;
+  }
+  var out = [];
+  for (i = 0; i < arr.length; i++) {
+    k = String(arr[i].url || "").replace(/\.(mp3|m3u8?|aac|ogg|opus|pls|asx|wma|mp4)(\?.*)?$/i, "").replace(/\/$/, "");
+    if (seen[k] === 1) out.push(arr[i]);
+  }
+  return out;
+}
+
+// Python one-shot that downloads the whole working catalog (paginated, a
+// few pages in parallel) and writes the disk snapshot the QML side reads.
+// Python does the heavy lifting because QML's JS engine parses 7 MB JSON
+// pages far too slowly; the shell just picks up the finished file.
+var CATALOG_FETCH_SCRIPT = [
+  "import json,os,re,sys,time,urllib.request",
+  "from concurrent.futures import ThreadPoolExecutor",
+  "from collections import Counter",
+  "MIRRORS=['https://de1.api.radio-browser.info','https://de2.api.radio-browser.info','https://nl1.api.radio-browser.info']",
+  "UA='OmarchyWorldRadio/1.0'",
+  "PAGE=5000",
+  "MAXOFF=200000",
+  "def get(url):",
+  "    req=urllib.request.Request(url,headers={'User-Agent':UA})",
+  "    return json.load(urllib.request.urlopen(req,timeout=90))",
+  "def fetch(base):",
+  "    out=[]",
+  "    off=0",
+  "    with ThreadPoolExecutor(max_workers=4) as ex:",
+  "        while off<MAXOFF:",
+  "            urls=[base+'/json/stations?hidebroken=true&order=name&limit='+str(PAGE)+'&offset='+str(o) for o in range(off,min(off+4*PAGE,MAXOFF),PAGE)]",
+  "            pages=list(ex.map(get,urls))",
+  "            for arr in pages:",
+  "                for s in arr:",
+  "                    url=str(s.get('url_resolved') or s.get('url') or '').strip()",
+  "                    if not url: continue",
+  "                    out.append({'uuid':str(s.get('stationuuid') or ''),'name':str(s.get('name') or 'Unknown station').strip()[:80],'url':url,'codec':str(s.get('codec') or '').upper(),'bitrate':int(s.get('bitrate') or 0),'country':str(s.get('country') or ''),'countrycode':str(s.get('countrycode') or '').upper(),'state':str(s.get('state') or ''),'language':str(s.get('language') or '').split(',')[0][:24],'clicks':int(s.get('clickcount') or 0)})",
+  "            if len(pages[-1])<PAGE: return out",
+  "            off+=len(pages)*PAGE",
+  "    return out",
+  "res=None",
+  "for m in MIRRORS:",
+  "    try:",
+  "        res=fetch(m)",
+  "        if res: break",
+  "    except Exception:",
+  "        continue",
+  "if res is None: sys.exit(1)",
+  "# Extinguish spam: a radio's identity is its stream — any URL (ignoring",
+  "# the trailing stream-extension variant) appearing more than once has the",
+  "# same radio registered in several places, so every copy is removed.",
+  "def _key(s):",
+  "    u=re.sub(r'\\.(mp3|m3u8?|aac|ogg|opus|pls|asx|wma|mp4)(\\?.*)?$','',s['url'],flags=re.I)",
+  "    return re.sub(r'/$','',u)",
+  "_kc=Counter(_key(x) for x in res)",
+  "res=[x for x in res if _kc[_key(x)]==1]",
+  "p=os.path.expanduser('~/.cache/quickshell/world-radio/catalog.json')",
+  "os.makedirs(os.path.dirname(p),exist_ok=True)",
+  "tmp=p+'.tmp'",
+  "open(tmp,'w').write(json.dumps({'v':1,'ts':int(time.time()*1000),'s':res}))",
+  "os.replace(tmp,p)"
+].join("\n")
+
 function topStationsUrl(base, limit) {
   return base + "/json/stations/topclick/" + (limit || 150);
 }
